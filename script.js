@@ -25,21 +25,40 @@
     D: "Group D · Class 11–12"
   };
 
-  document.querySelectorAll("[data-image-slot]").forEach(slot => {
-    const image = slot.querySelector("[data-upload-image]");
-    if (!image) return;
-    const markReady = () => slot.classList.toggle("asset-ready", image.naturalWidth > 0);
-    image.addEventListener("load", markReady);
-    image.addEventListener("error", () => {
-      const fallback = image.dataset.fallbackSrc;
-      if (fallback && image.src !== new URL(fallback, document.baseURI).href) {
-        image.src = fallback;
-        return;
-      }
-      markReady();
+  /* Olympiads that run at the same time for specific groups.
+     Registration remains available after the participant acknowledges
+     that they can physically attend only one conflicting event. */
+  const scheduleConflicts = {
+    "science-olympiad": { B: "Mathematics Olympiad" },
+    "mathematics-olympiad": { B: "Science Olympiad", C: "Biology Olympiad", D: "Biology Olympiad" },
+    "physics-olympiad": { C: "Chemistry Olympiad", D: "Chemistry Olympiad" },
+    "chemistry-olympiad": { C: "Physics Olympiad", D: "Physics Olympiad" },
+    "biology-olympiad": { C: "Mathematics Olympiad", D: "Mathematics Olympiad" },
+    "it-olympiad": { C: "General Knowledge Olympiad", D: "General Knowledge Olympiad" },
+    "gk-olympiad": { C: "IT Olympiad", D: "IT Olympiad" }
+  };
+
+  const activateImageSlots = (scope = document) => {
+    scope.querySelectorAll("[data-image-slot]").forEach(slot => {
+      if (slot.dataset.imageSlotReady === "true") return;
+      const image = slot.querySelector("[data-upload-image]");
+      if (!image) return;
+      slot.dataset.imageSlotReady = "true";
+      const markReady = () => slot.classList.toggle("asset-ready", image.naturalWidth > 0);
+      image.addEventListener("load", markReady);
+      image.addEventListener("error", () => {
+        const fallback = image.dataset.fallbackSrc;
+        if (fallback && image.src !== new URL(fallback, document.baseURI).href) {
+          image.src = fallback;
+          return;
+        }
+        markReady();
+      });
+      if (image.complete) markReady();
     });
-    if (image.complete) markReady();
-  });
+  };
+
+  activateImageSlots();
 
   const menuToggle = document.querySelector("[data-menu-toggle]");
   const primaryNav = document.getElementById("primary-nav");
@@ -71,6 +90,38 @@
     // Keep registration/details dialogs open when the shaded area is clicked.
     // Users close them deliberately with the cross or an on-screen action.
     modalRoot.querySelector("button, a, input, select, textarea")?.focus();
+  };
+
+  const showScheduleConflictWarning = ({ event, group, conflictingEvent, onCancel, onProceed }) => {
+    const modal = modalRoot?.querySelector(".modal");
+    if (!modal) return;
+
+    document.querySelector(".schedule-conflict-overlay")?.remove();
+    const overlay = document.createElement("div");
+    overlay.className = "schedule-conflict-overlay";
+    overlay.innerHTML = `
+      <section class="schedule-conflict-dialog" role="alertdialog" aria-modal="true" aria-labelledby="schedule-conflict-title" aria-describedby="schedule-conflict-copy">
+        <span class="schedule-conflict-icon" aria-hidden="true">!</span>
+        <p class="modal-kicker">${escapeHtml(groupLabels[group] || `Group ${group}`)} · Schedule conflict</p>
+        <h3 id="schedule-conflict-title">These events run at the same time</h3>
+        <p id="schedule-conflict-copy"><strong>${escapeHtml(event.title)}</strong> and <strong>${escapeHtml(conflictingEvent)}</strong> will be held at the same time for this group. A participant can attend only one of these events.</p>
+        <p class="schedule-conflict-note">You may continue this registration, but please choose your event carefully.</p>
+        <div class="modal-actions schedule-conflict-actions">
+          <button class="ghost-button" type="button" data-conflict-cancel>Change Selection</button>
+          <button class="primary-button" type="button" data-conflict-proceed>Proceed Anyway</button>
+        </div>
+      </section>`;
+    document.body.appendChild(overlay);
+
+    const finish = (proceed) => {
+      overlay.remove();
+      if (proceed) onProceed?.();
+      else onCancel?.();
+    };
+
+    overlay.querySelector("[data-conflict-cancel]")?.addEventListener("click", () => finish(false));
+    overlay.querySelector("[data-conflict-proceed]")?.addEventListener("click", () => finish(true));
+    overlay.querySelector("[data-conflict-proceed]")?.focus();
   };
 
   const successContent = (title, message, payload, demo) => `
@@ -460,6 +511,15 @@
   const categoryNav = document.getElementById("category-nav");
   const categorySections = document.getElementById("category-sections");
 
+  const gamingPoweredByMarkup = (variant = "inline") => `
+    <div class="gaming-powered-by gaming-powered-by-${variant}">
+      <span>Powered by</span>
+      <span class="gaming-powered-logo-box upload-image-slot" data-image-slot>
+        <img src="/assets/gaming-powered-by-logo.png" alt="Gaming powered by logo" data-upload-image>
+        <span class="asset-placeholder" aria-hidden="true">Logo</span>
+      </span>
+    </div>`;
+
   const eventCardMarkup = (event, index) => {
     const paymentActions = event.paymentRequired ? `
       <div class="card-actions gaming-card-top-actions">
@@ -482,7 +542,14 @@
   };
 
   if (eventGrid && events.length) {
-    eventGrid.innerHTML = events.map(event => eventCardMarkup(event, events.indexOf(event))).join("");
+    const requestedSlugs = String(eventGrid.dataset.eventFilter || "")
+      .split(",")
+      .map(slug => slug.trim())
+      .filter(Boolean);
+    const visibleEvents = requestedSlugs.length
+      ? requestedSlugs.map(slug => events.find(event => event.slug === slug)).filter(Boolean)
+      : events;
+    eventGrid.innerHTML = visibleEvents.map(event => eventCardMarkup(event, events.indexOf(event))).join("");
   }
 
   if (categoryNav && categorySections && events.length && eventCategories.length) {
@@ -491,15 +558,18 @@
 
     categorySections.innerHTML = eventCategories.map((category, index) => {
       const categoryEvents = category.eventSlugs.map(slug => events.find(event => event.slug === slug)).filter(Boolean);
+      const poweredBy = category.slug === "gaming" ? gamingPoweredByMarkup("inline") : "";
       return `<section class="event-category-section" id="category-${escapeHtml(category.slug)}" data-category-index="${index}">
         <div class="category-heading">
-          <div><span class="category-number">${String(index + 1).padStart(2, "0")}</span><h2>${escapeHtml(category.title)}</h2></div>
+          <div class="category-title-group"><span class="category-number">${String(index + 1).padStart(2, "0")}</span><h2>${escapeHtml(category.title)}</h2>${poweredBy}</div>
           <p>${escapeHtml(category.description)}</p>
           <span class="category-count">${categoryEvents.length} event${categoryEvents.length === 1 ? "" : "s"}</span>
         </div>
         <div class="event-grid category-event-grid">${categoryEvents.map(event => eventCardMarkup(event, events.indexOf(event))).join("")}</div>
       </section>`;
     }).join("");
+
+    activateImageSlots(categorySections);
 
     categoryNav.addEventListener("click", event => {
       const tab = event.target.closest(".category-tab");
@@ -625,7 +695,10 @@
     if (field.type === "select") {
       return `<div class="field full"><label for="entry-${field.key}">${escapeHtml(field.label)}</label><select id="entry-${field.key}" name="${field.key}" data-entry-field ${field.required ? "required" : ""}><option value="">Select ${escapeHtml(field.label.toLowerCase())}</option>${field.options.map(option => `<option>${escapeHtml(option)}</option>`).join("")}</select></div>`;
     }
-    return `<div class="field full"><label for="entry-${field.key}">${escapeHtml(field.label)}</label><input id="entry-${field.key}" name="${field.key}" data-entry-field ${field.required ? "required" : ""}></div>`;
+    const inputType = field.type === "url" ? "url" : "text";
+    const placeholder = field.placeholder ? ` placeholder="${escapeHtml(field.placeholder)}"` : "";
+    const pattern = field.pattern ? ` pattern="${escapeHtml(field.pattern)}"` : "";
+    return `<div class="field full"><label for="entry-${field.key}">${escapeHtml(field.label)}</label><input id="entry-${field.key}" name="${field.key}" type="${inputType}" data-entry-field${placeholder}${pattern} ${field.required ? "required" : ""}></div>`;
   };
 
   const participantForm = (event) => {
@@ -633,7 +706,8 @@
     const isTeamEvent = event.maxMembers > 1;
     const isGaming = Boolean(event.paymentRequired);
     const skipsClass = event.slug === "valorant" || event.slug === "fifa";
-    const asksGroup = event.groups.length < 4 && event.slug !== "valorant";
+    const hasScheduleConflict = Boolean(scheduleConflicts[event.slug]);
+    const asksGroup = (event.groups.length < 4 || hasScheduleConflict) && event.slug !== "valorant";
     const groupField = asksGroup ? `<div class="field full registration-group-field"><label for="registration-group">Select Group</label><select id="registration-group" name="registrationGroup" required><option value="" selected disabled>Select your group</option>${groupOptions(event.groups)}</select></div>` : "";
     const countField = isTeamEvent ? `
       <div class="field full member-count-field"><label for="member-count">Select Your Team Size</label><select id="member-count" name="memberCount" required><option value="" selected disabled>Select your team size</option>${countChoices.map(count => `<option value="${count}">${event.valorantRoster ? (count === 5 ? "5 main players" : `5 main players + ${count - 5} substitute${count === 6 ? "" : "s"}`) : `${count} member${count > 1 ? "s" : ""}`}</option>`).join("")}</select></div>` : `<input type="hidden" id="member-count" name="memberCount" value="1">`;
@@ -668,6 +742,7 @@
     const form = document.getElementById("participant-form");
     const memberFields = document.getElementById("member-fields");
     const countSelect = document.getElementById("member-count");
+    const groupSelect = document.getElementById("registration-group");
 
     const renderMembers = (count) => {
       if (!count) { memberFields.innerHTML = ""; return; }
@@ -691,6 +766,33 @@
 
     if (isTeamEvent) countSelect.addEventListener("change", () => renderMembers(Number(countSelect.value)));
     else renderMembers(1);
+
+    groupSelect?.addEventListener("change", () => {
+      const group = groupSelect.value;
+      const conflictingEvent = scheduleConflicts[event.slug]?.[group];
+      const conflictKey = conflictingEvent ? `${event.slug}:${group}:${conflictingEvent}` : "";
+
+      if (!conflictingEvent) {
+        delete groupSelect.dataset.approvedConflict;
+        return;
+      }
+      if (groupSelect.dataset.approvedConflict === conflictKey) return;
+
+      showScheduleConflictWarning({
+        event,
+        group,
+        conflictingEvent,
+        onCancel: () => {
+          groupSelect.value = "";
+          delete groupSelect.dataset.approvedConflict;
+          groupSelect.focus();
+        },
+        onProceed: () => {
+          groupSelect.dataset.approvedConflict = conflictKey;
+          groupSelect.focus();
+        }
+      });
+    });
 
     connectForm(form, () => {
       const errorBox = form.querySelector("[data-form-error]");
